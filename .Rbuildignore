@@ -9,3 +9,5 @@
 .*\.do$
 .*\.ado$
 ^README\.md$
+^R/script\.R$
+^inst/logo$
