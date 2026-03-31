@@ -1,0 +1,29 @@
+Package: bRunching
+Title: Bunching Correction Estimators for Censored Treatments
+Version: 0.1.0
+Authors@R: c(
+    person("Hugo", "SantAnna", email = "hsantanna@uga.edu", role = c("aut", "cre")),
+    person("Carolina", "Caetano", role = "aut"),
+    person("Gregorio", "Caetano", role = "aut"),
+    person("Debora", "Mazetto", role = "aut")
+    )
+Author: Hugo SantAnna [aut, cre], Carolina Caetano [aut], Gregorio Caetano [aut], Debora Mazetto [aut]
+Maintainer: Hugo SantAnna <hsantanna@uga.edu>
+Description: Implements the Caetano, Caetano, and Nielsen (CCN) bunching correction
+    estimator for regression models with a treatment variable censored at zero.
+    When many observations bunch at zero, naive OLS is biased. This package
+    estimates the censored expectation under uniform, Tobit, or symmetry
+    assumptions and includes it as a correction term. Supports homogeneous and
+    heterogeneous treatment effects, heterogeneous correction terms, and
+    discontinuity plots at the bunching point.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.3
+Imports:
+    stats,
+    survival,
+    ggplot2
+Suggests:
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
