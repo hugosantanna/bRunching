@@ -2,13 +2,11 @@ Package: bRunching
 Title: Bunching Correction Estimators for Censored Treatments
 Version: 0.1.0
 Authors@R: c(
-    person("Hugo", "SantAnna", email = "hsantanna@uga.edu", role = c("aut", "cre")),
-    person("Carolina", "Caetano", role = "aut"),
-    person("Gregorio", "Caetano", role = "aut"),
-    person("Debora", "Mazetto", role = "aut")
+    person("Hugo", "SantAnna", email = "hsantanna@uab.edu", role = c("aut", "cre")),
+    person("Debora", "Mazetto", email = "dmazetto@tntech.edu", role = "aut")
     )
-Author: Hugo SantAnna [aut, cre], Carolina Caetano [aut], Gregorio Caetano [aut], Debora Mazetto [aut]
-Maintainer: Hugo SantAnna <hsantanna@uga.edu>
+Author: Hugo SantAnna [aut, cre], Debora Mazetto [aut]
+Maintainer: Hugo SantAnna <hsantanna@uab.edu>
 Description: Implements the Caetano, Caetano, and Nielsen (CCN) bunching correction
     estimator for regression models with a treatment variable censored at zero.
     When many observations bunch at zero, naive OLS is biased. This package

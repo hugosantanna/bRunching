@@ -8,3 +8,4 @@
 ^\.claude$
 .*\.do$
 .*\.ado$
+^README\.md$
