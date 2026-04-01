@@ -13,7 +13,11 @@ cens_exp_uniform <- function(I, z, cens) {
   for (b in bins) {
     idx <- which(z == b)
     pos <- I[idx] > 0
-    if (sum(pos) == 0 || all(pos)) next
+    if (sum(pos) == 0) next          # all censored — can't estimate
+    if (all(pos)) {                  # no censoring — cens_exp irrelevant
+      out[idx] <- 0                  # (gets multiplied by cens=0 in reg_term)
+      next
+    }
     pos_mean  <- mean(I[idx][pos])
     bunching  <- mean(cens[idx])
     out[idx]  <- -pos_mean * (bunching / (1 - bunching))
@@ -32,8 +36,18 @@ cens_exp_tobit <- function(I, z, cens) {
     idx <- which(z == b)
     I_b <- I[idx]
 
-    # need variation and at least some censored + uncensored obs
-    if (length(unique(I_b)) < 2 || all(I_b == 0) || all(I_b > 0)) {
+    # all censored — can't estimate
+    if (all(I_b == 0)) {
+      dropped <- c(dropped, idx)
+      next
+    }
+    # no censoring — cens_exp irrelevant (gets multiplied by cens=0)
+    if (all(I_b > 0)) {
+      out[idx] <- 0
+      next
+    }
+    # need variation for Tobit
+    if (length(unique(I_b)) < 2) {
       dropped <- c(dropped, idx)
       next
     }
@@ -135,7 +149,12 @@ cens_exp_symmetric <- function(I, z, cens, swap = "tobit") {
       hatF_0   <- mean(cens_b)
       op_hatF  <- 1 - hatF_0
 
-      if (op_hatF <= 0 || op_hatF >= 1) {
+      if (op_hatF >= 1) {
+        # no censoring in this bin — cens_exp irrelevant
+        out[idx] <- 0
+        next
+      }
+      if (op_hatF <= 0) {
         switch_bins <- c(switch_bins, as.character(b))
         next
       }

@@ -87,18 +87,22 @@ test_that("symmetric correction runs", {
 })
 
 test_that("corrected estimate is closer to truth than naive", {
+  # DGP: y = 1 + 0.8*x + 0.5*x_star + noise
+  # True beta = 0.8 (direct effect of censored x)
+  # True delta = 0.5 (effect through latent x_star)
+  # Naive OLS on x is biased upward (picks up delta through x=x_star correlation)
   set.seed(10)
   n <- 5000
   z <- runif(n, 0, 10)
   x_star <- -1 + 0.3 * z + rnorm(n)   # substantial censoring at 0 (~30%)
   x <- pmax(x_star, 0)
-  y <- 1 + 0.8 * x_star + rnorm(n)
+  y <- 1 + 0.8 * x + 0.5 * x_star + rnorm(n)
   df <- data.frame(y = y, x = x, z = z)
 
   naive <- ccn("y", "x", "z", df, method = "naive")
   corrected <- ccn("y", "x", "z", df, method = "uniform", n_bins = 10)
 
-  # naive should be biased away from 0.8
+  # naive should be biased away from 0.8 (toward 1.3 = 0.8 + 0.5)
   naive_bias <- abs(naive$beta[1] - 0.8)
   corr_bias  <- abs(corrected$beta[1] - 0.8)
 

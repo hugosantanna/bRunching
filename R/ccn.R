@@ -202,12 +202,15 @@ ccn <- function(outcome,
 
   cens_exp_mean <- mean(cens_exp_k, na.rm = TRUE)
 
-  # bin dummies (recompute for kept obs; handle single-level case)
-  if (length(unique(z_bins_k)) > 1) {
-    bin_dummies_k <- stats::model.matrix(~ factor(z_bins_k))[, -1, drop = FALSE]
+  # bin dummies (recompute for kept obs; use ALL K levels for no-constant model)
+  z_f_k <- factor(z_bins_k)
+  if (nlevels(z_f_k) > 1) {
+    bin_dummies_k <- stats::model.matrix(~ 0 + z_f_k)
     colnames(bin_dummies_k) <- paste0("bin_", seq_len(ncol(bin_dummies_k)))
   } else {
-    bin_dummies_k <- NULL
+    # single bin: one column of 1s acts as intercept in no-constant model
+    bin_dummies_k <- matrix(1, nrow = length(z_bins_k), ncol = 1)
+    colnames(bin_dummies_k) <- "bin_1"
   }
 
   het_beta_mat_k <- NULL
