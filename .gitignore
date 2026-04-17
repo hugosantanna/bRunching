@@ -7,3 +7,17 @@
 ..Rcheck/
 .DS_Store
 .claude/
+
+# ---------- Data exclusions (added by cleanup) ----------------
+Data/
+data/
+*.dta
+*.csv
+*.rds
+*.RDS
+*.parquet
+*.fst
+*.sas7bdat
+results/
+output/
+*.log
