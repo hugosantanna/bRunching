@@ -6,11 +6,45 @@
 print.ccn <- function(x, ...) {
   cat("\nCCN Bunching Correction Estimator\n")
   cat("Method:", x$method, "\n")
+
+  # Human-readable estimand label.
+  estimand_label <- switch(
+    x$estimand %||% "beta_global",
+    "beta_global" = "Global beta (CCN 2023)",
+    "beta(0+)"    = "Local beta(0+) (CCT 2025)",
+    x$estimand
+  )
+  cat("Estimand:", estimand_label, "\n")
+
   cat("Obs:", x$n_obs, " | Censored:", x$n_censored,
       sprintf(" (%.1f%%)\n", 100 * x$n_censored / x$n_obs))
 
+  # --- CCT branch: use bootstrap SE if available ---
+  if (isTRUE(x$method == "cct")) {
+    cat("\nTreatment effect:\n")
+    beta_val <- unname(x$beta[1])
+    se_val <- x$boot_se
+    ci_lo <- x$boot_ci[1]
+    ci_hi <- x$boot_ci[2]
+    se_lab <- if (is.na(se_val)) "      NA" else sprintf("%.5f", se_val)
+    cat(sprintf("  %-20s %10.5f  (boot SE: %s)\n",
+                names(x$beta)[1], beta_val, se_lab))
+    if (!is.na(ci_lo) && !is.na(ci_hi)) {
+      cat(sprintf("  95%% bootstrap CI: [%.5f, %.5f]  (B_ok = %d)\n",
+                  ci_lo, ci_hi, x$boot_B))
+    }
+    if (!is.null(x$locscale_used)) {
+      cat(sprintf("\nLocation-scale regression: %s\n",
+                  if (x$locscale_used == "on") "on (full CDK)" else "off (Remark 4.2 short-circuit)"))
+    }
+    cat(sprintf("pi_hat: %.5f  |  Delta/pi: %.5f\n",
+                x$pi_hat %||% NA_real_, x$Delta_over_pi %||% NA_real_))
+    cat(sprintf("Z cells: %d  |  alpha* = %.2f\n", x$n_bins, x$alpha_star))
+    cat("\n")
+    return(invisible(x))
+  }
+
   cat("\nTreatment effect (beta):\n")
-  beta_se <- sqrt(diag(vcov(x$fit)))[names(x$beta)]
 
   # handle name mismatch: in the lm the var is "I", but we label with treatment name
   beta_names <- names(x$beta)
@@ -74,6 +108,7 @@ summary.ccn <- function(object, ...) {
 
 #' @export
 coef.ccn <- function(object, ...) {
+  if (is.null(object$delta)) return(object$beta)
   c(object$beta, object$delta)
 }
 

@@ -9,13 +9,21 @@ ccn(
   treatment,
   instrument,
   data,
-  method = c("symmetric", "uniform", "tobit", "het_tobit", "naive"),
+  method = c("symmetric", "uniform", "tobit", "het_tobit", "naive", "cct"),
   n_bins = NULL,
   controls = NULL,
   het_beta = NULL,
   het_delta = NULL,
   swap = c("tobit", "het_tobit"),
-  cluster_delta = NULL
+  cluster_delta = NULL,
+  alpha_star = 0.5,
+  alpha_grid = NULL,
+  alpha_s = NULL,
+  locscale = c("auto", "on", "off"),
+  zeta_0 = NULL,
+  zeta_1 = NULL,
+  boot_B = 500L,
+  seed = NULL
 )
 }
 \arguments{
@@ -31,20 +39,28 @@ at zero) in \code{data}.}
 
 \item{method}{Correction method. One of \code{"symmetric"} (default),
 \code{"uniform"}, \code{"tobit"} (pooled Tobit with instrument-bin dummies),
-\code{"het_tobit"} (per-bin Tobit), or \code{"naive"}.}
+\code{"het_tobit"} (per-bin Tobit), \code{"naive"}, or \code{"cct"} (Caetano-
+Caetano-Tecchio 2025; identifies the local boundary slope
+\eqn{\beta(0^+)} via a nonparametric location-scale censored
+regression of \eqn{X} on \eqn{Z}). When \code{method = "cct"}, the
+\code{instrument} argument is interpreted as the covariate \eqn{Z}
+indexing conditional quantiles (Assumption 5), not as an IV-style
+instrument.}
 
 \item{n_bins}{Integer. Number of equal-frequency bins for discretizing the
-instrument. If \code{NULL}, uses the number of unique values (up to 50).}
+instrument. If \code{NULL}, uses the number of unique values (up to 50).
+Ignored when \code{method = "cct"} (Z is used as-is).}
 
 \item{controls}{Character vector of control variable names, or a one-sided
 formula (e.g., \code{~ x1 + x2}).}
 
 \item{het_beta}{Character vector of variable names to interact with the
 treatment for heterogeneous effects. If \code{NULL}, estimates a homogeneous
-effect.}
+effect. Not used by \code{method = "cct"}.}
 
 \item{het_delta}{Character vector of variable names to interact with the
-correction term. Only used when \code{method != "naive"}.}
+correction term. Only used when \code{method != "naive"}. Not used by
+\code{method = "cct"}.}
 
 \item{swap}{Fallback method when the symmetry estimator fails (>50\\%
 censored in a bin). One of \code{"tobit"} (default) or \code{"het_tobit"}.}
@@ -52,14 +68,58 @@ censored in a bin). One of \code{"tobit"} (default) or \code{"het_tobit"}.}
 \item{cluster_delta}{Integer or \code{NULL}. If provided, uses a separate
 discretization with this many bins for heterogeneous delta estimation
 (interacts correction term with instrument bin dummies).}
+
+\item{alpha_star}{Known quantile level at which
+\eqn{H^{-1}(\alpha^\ast) = 0} (Assumption 5). Used only when
+\code{method = "cct"}. Default \code{0.5} (median). Identification (Assumption
+4) requires \verb{alpha_star > max_z P(X = 0 | Z = z)}: per-cell bunching
+must not exceed \code{alpha_star} or the CDK location-scale regression
+has no signal in over-bunched cells. Pick \code{alpha_star} above the
+heaviest per-cell bunching rate; the paper uses 0.85 for its
+Section 6.2 application where overall bunching is around 50\%.}
+
+\item{alpha_grid}{Numeric grid of quantile levels strictly above
+\code{alpha_star} used in the Chen-Dahl-Khan location-scale regression.
+Defaults to 8 equally spaced points in \verb{(alpha_star, 0.99]}, i.e.
+\code{seq(alpha_star, 0.99, length.out = 9)[-1]}. The length-based rule
+adapts to heavy bunching: when \code{alpha_star} is high (e.g. 0.85), the
+grid contracts toward \code{alpha_star} instead of collapsing to 1-2 very
+extreme quantiles where most within-z cells have \code{q_hat = 0}.
+\code{method = "cct"}.}
+
+\item{alpha_s}{Scale-anchor quantile in \verb{(alpha_star, 1)}. Defaults to
+\code{max(alpha_grid)}. \code{method = "cct"}.}
+
+\item{locscale}{One of \code{"auto"} (default), \code{"on"}, \code{"off"}. Controls
+the Remark 4.2 short-circuit: when every within-z \code{alpha_star}-
+quantile is strictly positive, the location-scale regression can be
+skipped in favor of \verb{m_hat(z) = q_hat(z; alpha_star)}. \code{"auto"}
+picks this automatically; \code{"off"} forces it; \code{"on"} always runs the
+full CDK regression. \code{method = "cct"}.}
+
+\item{zeta_0}{Trimming constant for the CDK third step (drops grid
+quantiles below this). Defaults to \code{1e-3 * sd(X)}. \code{method = "cct"}.}
+
+\item{zeta_1}{Kink location of the Buchinsky-Hahn smooth weight.
+Defaults to \code{zeta_0}. \code{method = "cct"}.}
+
+\item{boot_B}{Integer. Number of pairs-bootstrap replications for the
+standard error. Set to \code{0} to skip. Default \code{500}. \code{method = "cct"}.}
+
+\item{seed}{Optional integer seed used inside the bootstrap.
+\code{method = "cct"}.}
 }
 \value{
 An object of class \code{"ccn"} containing:
 \describe{
 \item{fit}{The fitted \code{lm} object from the corrected regression.}
-\item{beta}{Named vector of treatment effect estimates.}
-\item{delta}{Named vector of correction term coefficients (if applicable).}
+\item{beta}{Named vector of treatment effect estimates. For
+\code{method = "cct"} this is a scalar labelled \code{"beta(0+)"}.}
+\item{delta}{Named vector of correction term coefficients (or \code{NULL}
+when \code{method} is \code{"naive"} or \code{"cct"}).}
 \item{method}{The correction method used.}
+\item{estimand}{Either \code{"beta_global"} (CCN-style pooled slope) or
+\code{"beta(0+)"} (CCT local boundary slope).}
 \item{n_obs}{Number of observations.}
 \item{n_censored}{Number of censored (zero) observations.}
 \item{n_bins}{Number of instrument bins used.}
@@ -67,6 +127,9 @@ An object of class \code{"ccn"} containing:
 \item{cens_exp_mean}{Mean censored expectation.}
 \item{call}{The matched call.}
 }
+For \code{method = "cct"} the object additionally stores \code{m_hat}
+(per-observation estimate of \eqn{E[X^\ast \mid Z_i]}), \code{pi_hat},
+\code{Delta_over_pi}, \code{boot_se}, \code{boot_ci}, and \code{locscale_used}.
 }
 \description{
 Estimates the causal effect of a treatment variable censored at zero on an
@@ -96,4 +159,31 @@ df$w <- rbinom(n, 1, 0.5)
 ccn("y", "x", "z", df, method = "symmetric", het_beta = "w")
 }
 
+\donttest{
+# CCT 2025: local boundary slope beta(0+) via Chen-Dahl-Khan m(Z)
+set.seed(1)
+n <- 5000
+K <- 20
+Z <- sample.int(K, n, replace = TRUE)
+mu_z <- -0.5 + 0.15 * Z
+eta <- rnorm(n)
+x_star <- mu_z + eta
+x <- pmax(x_star, 0)
+y <- 2 + 0.8 * x_star + 1.5 * x * (x > 0) + rnorm(n)
+df <- data.frame(y = y, x = x, z = Z)
+
+fit <- ccn("y", "x", "z", df, method = "cct", boot_B = 100, seed = 42)
+print(fit)
+}
+
+}
+\references{
+Caetano, C., Caetano, G., and Tecchio, O. (2025). "Correcting
+Endogeneity of Treatments with Bunching Using Censoring Strategies."
+Working paper.
+
+Chen, S., Dahl, G. B., and Khan, S. (2005). "Nonparametric
+Identification and Estimation of a Censored Location-Scale Regression
+Model." \emph{Journal of the American Statistical Association}
+100(469): 212-221.
 }

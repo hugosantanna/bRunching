@@ -12,28 +12,72 @@
 #' @param data A data.frame containing all variables.
 #' @param method Correction method. One of `"symmetric"` (default),
 #'   `"uniform"`, `"tobit"` (pooled Tobit with instrument-bin dummies),
-#'   `"het_tobit"` (per-bin Tobit), or `"naive"`.
+#'   `"het_tobit"` (per-bin Tobit), `"naive"`, or `"cct"` (Caetano-
+#'   Caetano-Tecchio 2025; identifies the local boundary slope
+#'   \eqn{\beta(0^+)} via a nonparametric location-scale censored
+#'   regression of \eqn{X} on \eqn{Z}). When `method = "cct"`, the
+#'   `instrument` argument is interpreted as the covariate \eqn{Z}
+#'   indexing conditional quantiles (Assumption 5), not as an IV-style
+#'   instrument.
 #' @param n_bins Integer. Number of equal-frequency bins for discretizing the
 #'   instrument. If `NULL`, uses the number of unique values (up to 50).
+#'   Ignored when `method = "cct"` (Z is used as-is).
 #' @param controls Character vector of control variable names, or a one-sided
 #'   formula (e.g., `~ x1 + x2`).
 #' @param het_beta Character vector of variable names to interact with the
 #'   treatment for heterogeneous effects. If `NULL`, estimates a homogeneous
-#'   effect.
+#'   effect. Not used by `method = "cct"`.
 #' @param het_delta Character vector of variable names to interact with the
-#'   correction term. Only used when `method != "naive"`.
+#'   correction term. Only used when `method != "naive"`. Not used by
+#'   `method = "cct"`.
 #' @param swap Fallback method when the symmetry estimator fails (>50\%
 #'   censored in a bin). One of `"tobit"` (default) or `"het_tobit"`.
 #' @param cluster_delta Integer or `NULL`. If provided, uses a separate
 #'   discretization with this many bins for heterogeneous delta estimation
 #'   (interacts correction term with instrument bin dummies).
+#' @param alpha_star Known quantile level at which
+#'   \eqn{H^{-1}(\alpha^\ast) = 0} (Assumption 5). Used only when
+#'   `method = "cct"`. Default `0.5` (median). Identification (Assumption
+#'   4) requires `alpha_star > max_z P(X = 0 | Z = z)`: per-cell bunching
+#'   must not exceed `alpha_star` or the CDK location-scale regression
+#'   has no signal in over-bunched cells. Pick `alpha_star` above the
+#'   heaviest per-cell bunching rate; the paper uses 0.85 for its
+#'   Section 6.2 application where overall bunching is around 50%.
+#' @param alpha_grid Numeric grid of quantile levels strictly above
+#'   `alpha_star` used in the Chen-Dahl-Khan location-scale regression.
+#'   Defaults to 8 equally spaced points in `(alpha_star, 0.99]`, i.e.
+#'   `seq(alpha_star, 0.99, length.out = 9)[-1]`. The length-based rule
+#'   adapts to heavy bunching: when `alpha_star` is high (e.g. 0.85), the
+#'   grid contracts toward `alpha_star` instead of collapsing to 1-2 very
+#'   extreme quantiles where most within-z cells have `q_hat = 0`.
+#'   `method = "cct"`.
+#' @param alpha_s Scale-anchor quantile in `(alpha_star, 1)`. Defaults to
+#'   `max(alpha_grid)`. `method = "cct"`.
+#' @param locscale One of `"auto"` (default), `"on"`, `"off"`. Controls
+#'   the Remark 4.2 short-circuit: when every within-z `alpha_star`-
+#'   quantile is strictly positive, the location-scale regression can be
+#'   skipped in favor of `m_hat(z) = q_hat(z; alpha_star)`. `"auto"`
+#'   picks this automatically; `"off"` forces it; `"on"` always runs the
+#'   full CDK regression. `method = "cct"`.
+#' @param zeta_0 Trimming constant for the CDK third step (drops grid
+#'   quantiles below this). Defaults to `1e-3 * sd(X)`. `method = "cct"`.
+#' @param zeta_1 Kink location of the Buchinsky-Hahn smooth weight.
+#'   Defaults to `zeta_0`. `method = "cct"`.
+#' @param boot_B Integer. Number of pairs-bootstrap replications for the
+#'   standard error. Set to `0` to skip. Default `500`. `method = "cct"`.
+#' @param seed Optional integer seed used inside the bootstrap.
+#'   `method = "cct"`.
 #'
 #' @return An object of class `"ccn"` containing:
 #' \describe{
 #'   \item{fit}{The fitted `lm` object from the corrected regression.}
-#'   \item{beta}{Named vector of treatment effect estimates.}
-#'   \item{delta}{Named vector of correction term coefficients (if applicable).}
+#'   \item{beta}{Named vector of treatment effect estimates. For
+#'     `method = "cct"` this is a scalar labelled `"beta(0+)"`.}
+#'   \item{delta}{Named vector of correction term coefficients (or `NULL`
+#'     when `method` is `"naive"` or `"cct"`).}
 #'   \item{method}{The correction method used.}
+#'   \item{estimand}{Either `"beta_global"` (CCN-style pooled slope) or
+#'     `"beta(0+)"` (CCT local boundary slope).}
 #'   \item{n_obs}{Number of observations.}
 #'   \item{n_censored}{Number of censored (zero) observations.}
 #'   \item{n_bins}{Number of instrument bins used.}
@@ -41,6 +85,19 @@
 #'   \item{cens_exp_mean}{Mean censored expectation.}
 #'   \item{call}{The matched call.}
 #' }
+#' For `method = "cct"` the object additionally stores `m_hat`
+#' (per-observation estimate of \eqn{E[X^\ast \mid Z_i]}), `pi_hat`,
+#' `Delta_over_pi`, `boot_se`, `boot_ci`, and `locscale_used`.
+#'
+#' @references
+#' Caetano, C., Caetano, G., and Tecchio, O. (2025). "Correcting
+#' Endogeneity of Treatments with Bunching Using Censoring Strategies."
+#' Working paper.
+#'
+#' Chen, S., Dahl, G. B., and Khan, S. (2005). "Nonparametric
+#' Identification and Estimation of a Censored Location-Scale Regression
+#' Model." \emph{Journal of the American Statistical Association}
+#' 100(469): 212-221.
 #'
 #' @examples
 #' \dontrun{
@@ -65,22 +122,49 @@
 #' ccn("y", "x", "z", df, method = "symmetric", het_beta = "w")
 #' }
 #'
+#' \donttest{
+#' # CCT 2025: local boundary slope beta(0+) via Chen-Dahl-Khan m(Z)
+#' set.seed(1)
+#' n <- 5000
+#' K <- 20
+#' Z <- sample.int(K, n, replace = TRUE)
+#' mu_z <- -0.5 + 0.15 * Z
+#' eta <- rnorm(n)
+#' x_star <- mu_z + eta
+#' x <- pmax(x_star, 0)
+#' y <- 2 + 0.8 * x_star + 1.5 * x * (x > 0) + rnorm(n)
+#' df <- data.frame(y = y, x = x, z = Z)
+#'
+#' fit <- ccn("y", "x", "z", df, method = "cct", boot_B = 100, seed = 42)
+#' print(fit)
+#' }
+#'
 #' @export
 ccn <- function(outcome,
                 treatment,
                 instrument,
                 data,
-                method = c("symmetric", "uniform", "tobit", "het_tobit", "naive"),
+                method = c("symmetric", "uniform", "tobit", "het_tobit",
+                           "naive", "cct"),
                 n_bins = NULL,
                 controls = NULL,
                 het_beta = NULL,
                 het_delta = NULL,
                 swap = c("tobit", "het_tobit"),
-                cluster_delta = NULL) {
+                cluster_delta = NULL,
+                alpha_star = 0.5,
+                alpha_grid = NULL,
+                alpha_s = NULL,
+                locscale = c("auto", "on", "off"),
+                zeta_0 = NULL,
+                zeta_1 = NULL,
+                boot_B = 500L,
+                seed = NULL) {
 
   cl <- match.call()
-  method <- match.arg(method)
-  swap   <- match.arg(swap)
+  method   <- match.arg(method)
+  swap     <- match.arg(swap)
+  locscale <- match.arg(locscale)
 
   # --- validate inputs ---
   stopifnot(is.data.frame(data))
@@ -97,6 +181,55 @@ ccn <- function(outcome,
   S <- data[[outcome]]
   I <- data[[treatment]]
   Z <- data[[instrument]]
+
+  # --- CCT branch: Caetano-Caetano-Tecchio 2025 ---
+  if (method == "cct") {
+    # Build controls matrix if requested.
+    controls_mat <- NULL
+    if (!is.null(controls)) {
+      for (v in controls) {
+        if (!v %in% names(data)) stop(sprintf("Control variable '%s' not found in data.", v))
+      }
+      controls_mat <- as.matrix(data[, controls, drop = FALSE])
+    }
+
+    # Defaults for CCT tuning parameters.
+    if (is.null(alpha_grid)) {
+      # 8 equally spaced points in (alpha_star, 0.99]. Adapts to heavy
+      # bunching: for high alpha_star (e.g. 0.85), the grid contracts
+      # toward alpha_star rather than collapsing to 1-2 extreme quantiles
+      # where most within-z cells have q_hat = 0.
+      alpha_grid <- seq(alpha_star, 0.99, length.out = 9L)[-1L]
+    }
+    if (is.null(alpha_s)) {
+      alpha_s <- max(alpha_grid)
+    }
+    if (is.null(zeta_0)) {
+      zeta_0 <- 1e-3 * stats::sd(I)
+      if (!is.finite(zeta_0) || zeta_0 <= 0) zeta_0 <- 1e-6
+    }
+    if (is.null(zeta_1)) zeta_1 <- zeta_0
+
+    return(ccn_cct(
+      Y            = S,
+      X            = I,
+      Z            = Z,
+      controls_mat = controls_mat,
+      alpha_star   = alpha_star,
+      alpha_grid   = alpha_grid,
+      alpha_s      = alpha_s,
+      locscale     = locscale,
+      zeta_0       = zeta_0,
+      zeta_1       = zeta_1,
+      boot_B       = boot_B,
+      seed         = seed,
+      call         = cl,
+      data         = data,
+      outcome      = outcome,
+      treatment    = treatment,
+      instrument   = instrument
+    ))
+  }
 
   # censoring indicator
   cens <- as.integer(I == 0)
@@ -159,6 +292,7 @@ ccn <- function(outcome,
       beta        = beta,
       delta       = NULL,
       method      = method,
+      estimand    = "beta_global",
       n_obs       = nrow(data),
       n_censored  = sum(cens),
       n_bins      = n_bins,
@@ -272,6 +406,7 @@ ccn <- function(outcome,
     beta          = beta,
     delta         = delta,
     method        = method,
+    estimand      = "beta_global",
     n_obs         = sum(keep),
     n_censored    = sum(cens_k),
     n_bins        = n_bins,
