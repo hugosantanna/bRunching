@@ -175,5 +175,75 @@ if _rc == 0 {
 }
 di as res "  PASS: missing z variable raises error"
 
+// ---------- Tests 10-13: bootstrap inference for the corrected CCN methods ----------
+// Each method should produce finite e(boot_se_beta), e(boot_se_delta), and a
+// 95% CI when called with boot(50) seed(42).
+
+foreach m in uniform tobit het_tobit symmetric {
+    di as txt _n _dup(78) "=" _n "Bootstrap test: method = `m'"
+    clear
+    set obs 1500
+    set seed 1001
+    gen z = runiform() * 10
+    gen x_star = -0.5 + 0.3 * z + rnormal()
+    gen x = max(x_star, 0)
+    gen y = 1 + 0.8 * x_star + rnormal()
+
+    brunching y x, method(`m') z(z) nbins(5) boot(50) seed(42)
+
+    assert !missing(_b[x])
+    assert !missing(e(delta))
+    assert !missing(e(boot_se_beta))
+    assert e(boot_se_beta) > 0
+    assert !missing(e(boot_se_delta))
+    assert e(boot_se_delta) > 0
+    assert !missing(e(boot_ci_beta_lo))
+    assert !missing(e(boot_ci_beta_hi))
+    assert e(boot_ci_beta_lo) <= _b[x] & _b[x] <= e(boot_ci_beta_hi)
+    assert e(boot_B) > 20  // most reps succeed
+    assert e(boot_B_req) == 50
+    di as res "  PASS: bootstrap (`m')  boot_se=" %9.5f e(boot_se_beta)             ///
+              "  ci=[" %9.5f e(boot_ci_beta_lo) ", " %9.5f e(boot_ci_beta_hi) "]"  ///
+              "  B_ok=" e(boot_B)
+}
+
+// ---------- Test 14: bootstrap with seed is reproducible ----------
+di as txt _n _dup(78) "=" _n "Test 14: bootstrap reproducibility"
+clear
+set obs 1500
+set seed 2002
+gen z = runiform() * 10
+gen x_star = -0.5 + 0.3 * z + rnormal()
+gen x = max(x_star, 0)
+gen y = 1 + 0.8 * x_star + rnormal()
+
+brunching y x, method(uniform) z(z) nbins(5) boot(30) seed(99)
+local se1 = e(boot_se_beta)
+brunching y x, method(uniform) z(z) nbins(5) boot(30) seed(99)
+local se2 = e(boot_se_beta)
+local diff = abs(`se1' - `se2')
+if `diff' > 1e-12 {
+    di as err "  FAIL: same seed gave different SE: `se1' vs `se2'"
+    exit 9
+}
+di as res "  PASS: bootstrap is reproducible with seed (SE=" %9.5f `se1' ")"
+
+// ---------- Test 15: boot(0) leaves the bootstrap fields unset ----------
+di as txt _n _dup(78) "=" _n "Test 15: boot(0) backward compat"
+clear
+set obs 1500
+set seed 3003
+gen z = runiform() * 10
+gen x_star = -0.5 + 0.3 * z + rnormal()
+gen x = max(x_star, 0)
+gen y = 1 + 0.8 * x_star + rnormal()
+
+brunching y x, method(uniform) z(z) nbins(5) boot(0)
+assert !missing(_b[x])
+assert missing(e(boot_se_beta))
+brunching y x, method(uniform) z(z) nbins(5)
+assert missing(e(boot_se_beta))
+di as res "  PASS: default boot(0) does not run the bootstrap"
+
 di _n as txt _dup(78) "=" _n "All basic tests PASSED." _n _dup(78) "=" _n
 exit 0

@@ -96,7 +96,8 @@ program define brunching, eclass
         _brunching_ccn `outcome' `treatment' if `touse',       ///
             method(`method')                                   ///
             z(`z') controls(`controls')                        ///
-            nbins(`nbins') swap(`swap')
+            nbins(`nbins') swap(`swap')                        ///
+            boot(`boot') seed(`seed')
     }
 
     // The worker posts results via ereturn. We add a few top-level scalars.

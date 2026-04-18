@@ -44,7 +44,14 @@ print.ccn <- function(x, ...) {
     return(invisible(x))
   }
 
+  has_boot <- !is.null(x$boot_se_beta) &&
+    isTRUE((x$boot_B %||% 0L) > 0L)
+
   cat("\nTreatment effect (beta):\n")
+  if (has_boot) {
+    cat(sprintf("  %-20s %10s  %10s  %10s\n",
+                "", "Estimate", "OLS SE", "Boot SE"))
+  }
 
   # handle name mismatch: in the lm the var is "I", but we label with treatment name
   beta_names <- names(x$beta)
@@ -56,16 +63,61 @@ print.ccn <- function(x, ...) {
     # find matching coef in the fit
     fit_nm <- if (nm == x$treatment) "I" else nm
     se_val <- if (fit_nm %in% names(fit_coefs)) sqrt(fit_vcov[fit_nm, fit_nm]) else NA
-    cat(sprintf("  %-20s %10.5f  (SE: %.5f)\n", nm, x$beta[i], se_val))
+    if (has_boot) {
+      bse <- x$boot_se_beta[nm]
+      bse_str <- if (is.null(bse) || is.na(bse)) "      NA" else sprintf("%10.5f", bse)
+      cat(sprintf("  %-20s %10.5f  %10.5f  %s\n",
+                  nm, x$beta[i], se_val, bse_str))
+    } else {
+      cat(sprintf("  %-20s %10.5f  (SE: %.5f)\n", nm, x$beta[i], se_val))
+    }
+  }
+
+  if (has_boot && !is.null(x$boot_ci_beta)) {
+    cat("\n  95% bootstrap CI (beta):\n")
+    for (i in seq_along(x$beta)) {
+      nm <- beta_names[i]
+      lo <- x$boot_ci_beta[nm, 1L]
+      hi <- x$boot_ci_beta[nm, 2L]
+      if (!is.na(lo) && !is.na(hi)) {
+        cat(sprintf("    %-18s [%10.5f, %10.5f]\n", nm, lo, hi))
+      }
+    }
   }
 
   if (!is.null(x$delta) && x$method != "naive") {
     cat("\nCorrection term (delta):\n")
+    if (has_boot && !is.null(x$boot_se_delta)) {
+      cat(sprintf("  %-20s %10s  %10s  %10s\n",
+                  "", "Estimate", "OLS SE", "Boot SE"))
+    }
     for (i in seq_along(x$delta)) {
       nm <- names(x$delta)[i]
       se_val <- if (nm %in% rownames(fit_vcov)) sqrt(fit_vcov[nm, nm]) else NA
-      cat(sprintf("  %-20s %10.5f  (SE: %.5f)\n", nm, x$delta[i], se_val))
+      if (has_boot && !is.null(x$boot_se_delta)) {
+        bse <- x$boot_se_delta[nm]
+        bse_str <- if (is.null(bse) || is.na(bse)) "      NA" else sprintf("%10.5f", bse)
+        cat(sprintf("  %-20s %10.5f  %10.5f  %s\n",
+                    nm, x$delta[i], se_val, bse_str))
+      } else {
+        cat(sprintf("  %-20s %10.5f  (SE: %.5f)\n", nm, x$delta[i], se_val))
+      }
     }
+    if (has_boot && !is.null(x$boot_ci_delta)) {
+      cat("\n  95% bootstrap CI (delta):\n")
+      for (i in seq_along(x$delta)) {
+        nm <- names(x$delta)[i]
+        lo <- x$boot_ci_delta[nm, 1L]
+        hi <- x$boot_ci_delta[nm, 2L]
+        if (!is.na(lo) && !is.na(hi)) {
+          cat(sprintf("    %-18s [%10.5f, %10.5f]\n", nm, lo, hi))
+        }
+      }
+    }
+  }
+
+  if (has_boot) {
+    cat(sprintf("\nBootstrap: pairs, B_ok = %d\n", x$boot_B))
   }
 
   if (x$method != "naive") {

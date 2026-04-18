@@ -22,7 +22,7 @@ ccn(
   locscale = c("auto", "on", "off"),
   zeta_0 = NULL,
   zeta_1 = NULL,
-  boot_B = 500L,
+  boot_B = NULL,
   seed = NULL
 )
 }
@@ -104,10 +104,15 @@ quantiles below this). Defaults to \code{1e-3 * sd(X)}. \code{method = "cct"}.}
 Defaults to \code{zeta_0}. \code{method = "cct"}.}
 
 \item{boot_B}{Integer. Number of pairs-bootstrap replications for the
-standard error. Set to \code{0} to skip. Default \code{500}. \code{method = "cct"}.}
+standard error. Set to \code{0} to skip. Method-dependent default: \code{500}
+for \code{method = "cct"} (no closed-form SE is available) and \code{0} for the
+corrected CCN methods (\code{uniform}, \code{tobit}, \code{het_tobit}, \code{symmetric})
+so that the legacy OLS SE in \verb{$fit} is the default; opt-in to the
+pairs bootstrap by passing e.g. \code{boot_B = 500}. \code{method = "naive"}
+ignores \code{boot_B} and reports OLS SE only.}
 
-\item{seed}{Optional integer seed used inside the bootstrap.
-\code{method = "cct"}.}
+\item{seed}{Optional integer seed used inside the bootstrap. Applies to
+both \code{method = "cct"} and the corrected CCN methods.}
 }
 \value{
 An object of class \code{"ccn"} containing:

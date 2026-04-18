@@ -313,3 +313,114 @@ test_that("top-level 'tobit' and 'het_tobit' are distinct estimators", {
     info = "Pooled Tobit and per-bin Tobit should not collapse to the same estimator"
   )
 })
+
+# ---------------------------------------------------------------------------- #
+# Bootstrap inference for the corrected CCN methods
+# ---------------------------------------------------------------------------- #
+
+# Shared DGP for the bootstrap tests: small enough to run fast, ~30%
+# bunching, all corrected methods identifiable.
+.boot_dgp <- function(n = 1000, seed = 1L) {
+  set.seed(seed)
+  z <- runif(n, 0, 10)
+  x_star <- -0.5 + 0.3 * z + rnorm(n)
+  x <- pmax(x_star, 0)
+  y <- 1 + 0.8 * x_star + rnorm(n)
+  data.frame(y = y, x = x, z = z)
+}
+
+test_that("uniform with boot_B > 0 returns bootstrap SEs", {
+  df <- .boot_dgp(seed = 101L)
+
+  fit <- ccn("y", "x", "z", df, method = "uniform", n_bins = 5,
+             boot_B = 50L, seed = 42L)
+  expect_false(is.null(fit$boot_se_beta))
+  expect_equal(length(fit$boot_se_beta), length(fit$beta))
+  expect_true(fit$boot_B > 30L)
+  expect_true(all(is.finite(fit$boot_se_beta)))
+  expect_false(is.null(fit$boot_se_delta))
+  expect_true(all(is.finite(fit$boot_se_delta)))
+  expect_equal(dim(fit$boot_ci_beta), c(length(fit$beta), 2L))
+  expect_equal(dim(fit$boot_ci_delta), c(length(fit$delta), 2L))
+
+  # OLS slot still populated and untouched
+  expect_s3_class(fit$fit, "lm")
+  ols_se <- sqrt(diag(vcov(fit$fit))["I"])
+  expect_true(is.finite(ols_se))
+})
+
+test_that("tobit with boot_B > 0 returns bootstrap SEs", {
+  df <- .boot_dgp(seed = 102L)
+
+  fit <- ccn("y", "x", "z", df, method = "tobit", n_bins = 5,
+             boot_B = 50L, seed = 42L)
+  expect_false(is.null(fit$boot_se_beta))
+  expect_true(fit$boot_B > 30L)
+  expect_true(all(is.finite(fit$boot_se_beta)))
+  expect_true(all(is.finite(fit$boot_se_delta)))
+})
+
+test_that("het_tobit with boot_B > 0 returns bootstrap SEs", {
+  df <- .boot_dgp(seed = 103L)
+
+  fit <- ccn("y", "x", "z", df, method = "het_tobit", n_bins = 5,
+             boot_B = 50L, seed = 42L)
+  expect_false(is.null(fit$boot_se_beta))
+  expect_true(fit$boot_B > 20L)  # per-bin Tobit can fail more often
+  expect_true(all(is.finite(fit$boot_se_beta)))
+})
+
+test_that("symmetric with boot_B > 0 returns bootstrap SEs", {
+  df <- .boot_dgp(seed = 104L)
+
+  fit <- ccn("y", "x", "z", df, method = "symmetric", n_bins = 5,
+             boot_B = 50L, seed = 42L)
+  expect_false(is.null(fit$boot_se_beta))
+  expect_true(fit$boot_B > 30L)
+  expect_true(all(is.finite(fit$boot_se_beta)))
+  expect_true(all(is.finite(fit$boot_se_delta)))
+})
+
+test_that("naive ignores boot_B (no bootstrap fields)", {
+  df <- .boot_dgp(seed = 105L)
+  fit <- ccn("y", "x", "z", df, method = "naive", boot_B = 50L, seed = 42L)
+  expect_null(fit$boot_se_beta)
+  expect_null(fit$boot_se_delta)
+})
+
+test_that("boot_B default is 0 for CCN (backward compat)", {
+  df <- .boot_dgp(seed = 106L)
+  # Default (boot_B unset) must NOT trigger the bootstrap for CCN methods,
+  # so legacy callers that never asked for inference do not get a free
+  # 500-iteration bootstrap.
+  fit <- ccn("y", "x", "z", df, method = "uniform", n_bins = 5)
+  expect_null(fit$boot_se_beta)
+  expect_null(fit$boot_se_delta)
+  expect_equal(fit$boot_B, 0L)
+
+  # Explicit boot_B = 0 is the same path
+  fit0 <- ccn("y", "x", "z", df, method = "uniform", n_bins = 5,
+              boot_B = 0L)
+  expect_null(fit0$boot_se_beta)
+})
+
+test_that("seed makes bootstrap reproducible", {
+  df <- .boot_dgp(seed = 107L)
+
+  fit1 <- ccn("y", "x", "z", df, method = "uniform", n_bins = 5,
+              boot_B = 30L, seed = 99L)
+  fit2 <- ccn("y", "x", "z", df, method = "uniform", n_bins = 5,
+              boot_B = 30L, seed = 99L)
+  expect_equal(fit1$boot_se_beta, fit2$boot_se_beta)
+  expect_equal(fit1$boot_se_delta, fit2$boot_se_delta)
+})
+
+test_that("print works on a bootstrap fit", {
+  df <- .boot_dgp(seed = 108L)
+  fit <- ccn("y", "x", "z", df, method = "uniform", n_bins = 5,
+             boot_B = 30L, seed = 42L)
+  out <- capture.output(print(fit))
+  expect_true(any(grepl("Boot SE", out)))
+  expect_true(any(grepl("bootstrap CI", out)))
+  expect_true(any(grepl("B_ok", out)))
+})

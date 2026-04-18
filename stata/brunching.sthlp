@@ -36,6 +36,13 @@ outcome regression.{p_end}
 {synopt:{opt nbins(#)}}number of equal-frequency bins for discretizing {opt z()} in the CCN methods; default is 10.{p_end}
 {synopt:{opt swap(name)}}fallback when a bin has >=50% bunching in
 {opt method(symmetric)}; one of {opt tobit} (default) or {opt het_tobit}.{p_end}
+{synopt:{opt boot(#)}}pairs-bootstrap replications; default 0 (no bootstrap).
+For the CCN methods (uniform/tobit/het_tobit/symmetric) this is an internal
+pairs bootstrap that re-runs the entire pipeline (re-bin Z, re-compute the
+censored expectation, re-fit the corrected regression) on each resample.
+The {opt naive} method ignores {opt boot()}; use Stata's {cmd:bootstrap} prefix
+for naive inference.{p_end}
+{synopt:{opt seed(#)}}random seed for the internal bootstrap (CCN and CCT).{p_end}
 
 {syntab:CCT-specific}
 {synopt:{opt alpha_star(#)}}known quantile where the conditional quantile of the latent variable equals 0; default 0.5.{p_end}
@@ -44,8 +51,6 @@ outcome regression.{p_end}
 {synopt:{opt zeta_0(#)}}trimming constant; default 1e-3 * sd(X).{p_end}
 {synopt:{opt zeta_1(#)}}kink location of the Buchinsky-Hahn weight; default zeta_0.{p_end}
 {synopt:{opt locscale(name)}}Remark 4.2 short-circuit: {opt auto} (default), {opt on}, or {opt off}.{p_end}
-{synopt:{opt boot(#)}}pairs-bootstrap replications; default 0 (no bootstrap). Use Stata's {cmd:bootstrap} prefix for more flexible inference.{p_end}
-{synopt:{opt seed(#)}}random seed for the internal bootstrap.{p_end}
 {synoptline}
 
 
@@ -126,18 +131,28 @@ m_hat(z) = q_hat(z; alpha_star).
 {title:Remarks}
 
 {pstd}
-{ul:Standard errors.}  For the CCN methods, {cmd:brunching} returns the
-OLS standard errors from the corrected regression.  These ignore the
-sampling uncertainty in the censored-expectation estimation; for valid
-inference, use Stata's {cmd:bootstrap} prefix:
+{ul:Standard errors.}  By default, the CCN methods return the OLS
+standard errors from the corrected regression.  These ignore the
+sampling uncertainty in the censored-expectation estimation, so for
+valid inference pass {opt boot(#)} to run an internal pairs bootstrap:
+
+{phang2}
+{cmd:. brunching y x, method(symmetric) z(z) boot(500) seed(42)}
+
+{pstd}
+The internal bootstrap re-runs the entire pipeline on each resample
+(fresh Z bins, fresh censored expectation, fresh corrected regression).
+Results are returned in {cmd:e(boot_se_beta)}, {cmd:e(boot_ci_beta_lo)},
+{cmd:e(boot_ci_beta_hi)}, and the analogous {cmd:e(boot_*_delta)} fields.
+Equivalent inference via Stata's {cmd:bootstrap} prefix is also supported:
 
 {phang2}
 {cmd:. bootstrap beta=_b[x] delta=e(delta), reps(500): brunching y x, method(symmetric) z(z)}
 
 {pstd}
-For {opt method(cct)}, a built-in pairs bootstrap is available via
-{opt boot(#)}; results are returned in {cmd:e(boot_se)}, {cmd:e(boot_ci_lo)},
-{cmd:e(boot_ci_hi)}.
+For {opt method(cct)}, the same {opt boot(#)} option drives the bootstrap
+described in Caetano-Caetano-Tecchio (2025); results are returned in
+{cmd:e(boot_se)}, {cmd:e(boot_ci_lo)}, {cmd:e(boot_ci_hi)}.
 
 
 {marker examples}{...}
@@ -183,9 +198,14 @@ For {opt method(cct)}, a built-in pairs bootstrap is available via
 {synopt:{cmd:e(delta_se)}}standard error of delta (CCN, non-naive){p_end}
 {synopt:{cmd:e(pi_hat)}}CCT 2025 pi_hat{p_end}
 {synopt:{cmd:e(delta_over_pi)}}CCT 2025 coefficient on Xtilde{p_end}
-{synopt:{cmd:e(boot_B)}}CCT bootstrap successful reps{p_end}
+{synopt:{cmd:e(boot_B)}}successful bootstrap reps (CCN and CCT){p_end}
+{synopt:{cmd:e(boot_B_req)}}requested bootstrap reps (CCN){p_end}
 {synopt:{cmd:e(boot_se)}}CCT bootstrap SE of beta(0+){p_end}
 {synopt:{cmd:e(boot_ci_lo) / e(boot_ci_hi)}}CCT 95% percentile CI{p_end}
+{synopt:{cmd:e(boot_se_beta)}}CCN bootstrap SE of beta{p_end}
+{synopt:{cmd:e(boot_ci_beta_lo) / e(boot_ci_beta_hi)}}CCN 95% percentile CI for beta{p_end}
+{synopt:{cmd:e(boot_se_delta)}}CCN bootstrap SE of delta{p_end}
+{synopt:{cmd:e(boot_ci_delta_lo) / e(boot_ci_delta_hi)}}CCN 95% percentile CI for delta{p_end}
 
 {p2col 5 20 24 2: Macros}{p_end}
 {synopt:{cmd:e(cmd)}}{cmd:brunching}{p_end}

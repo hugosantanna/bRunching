@@ -17,7 +17,9 @@ program define _brunching_ccn, eclass
         [ Z(varname numeric)                                   ///
           CONTROLS(varlist numeric)                            ///
           NBINS(integer 10)                                    ///
-          SWAP(string) ]
+          SWAP(string)                                         ///
+          BOOT(integer 0)                                      ///
+          SEED(integer -1) ]
 
     if "`swap'" == "" local swap "tobit"
 
@@ -30,6 +32,16 @@ program define _brunching_ccn, eclass
 
     preserve
     qui keep if `touse'
+
+    // ---------- snapshot the touse sample for the bootstrap ----------
+    // Saved before any temp-variable creation so resamples start from a
+    // clean dataset containing only Y, X, Z, and controls. Each bootstrap
+    // iteration will reload from this snapshot, draw with replacement,
+    // and re-run the entire bin/cens_exp/regression pipeline.
+    tempfile boot_snap
+    if `boot' > 0 {
+        qui save "`boot_snap'", replace
+    }
 
     // ---------- basic counts ----------
     qui count
@@ -152,6 +164,131 @@ program define _brunching_ccn, eclass
     local delta    = _b[`reg_term']
     local delta_se = _se[`reg_term']
 
+    // ---------- pairs bootstrap (optional) ----------
+    // Implemented as a Stata-level loop because the Tobit methods need
+    // Stata's `tobit` command (no Mata implementation). The main fit
+    // remains on the original e(), bit-identical to what it was before.
+    //
+    // We resample from the FULL touse sample (the snapshot saved before
+    // dropping failed-bin observations) so that each bootstrap iteration
+    // re-runs the entire pipeline: fresh bins, fresh censored expectation,
+    // fresh corrected regression. Iterations that fail (rank-deficient
+    // design, Tobit non-convergence) are silently skipped and tracked via
+    // B_ok.
+    tempname B_beta B_delta boot_se_b boot_se_d boot_ci_b boot_ci_d boot_res
+    local B_ok = 0
+    if `boot' > 0 {
+        if `seed' >= 0 set seed `seed'
+
+        // The outer `preserve` from the main fit is already in effect, and
+        // Stata does not allow nested preserves in the same program. Each
+        // bootstrap iteration loads the snapshot via `use, clear` (which
+        // wipes the data but NOT local macros or matrices) so the main-fit
+        // matrices `b'/`V' and the harvested locals (n_cens_used, ...,
+        // delta_se) survive the loop and can still be passed downstream.
+        //
+        // CRITICAL: do NOT use `b' as the loop counter -- it shadows the
+        // tempname holding the main-fit coefficient matrix.
+
+        mata: `B_beta'  = J(`boot', 1, .)
+        mata: `B_delta' = J(`boot', 1, .)
+
+        forvalues bi = 1 / `boot' {
+            qui use "`boot_snap'", clear
+            qui bsample
+
+            // Recompute bins on the resample.
+            tempvar zbin_b cens_ind_b cens_exp_b dropmask_b reg_term_b
+            qui gen byte `cens_ind_b' = (`X' == 0)
+
+            qui levelsof `z', local(zlevs_b)
+            local n_unique_b : word count `zlevs_b'
+            if `n_unique_b' <= `nbins' {
+                qui egen int `zbin_b' = group(`z')
+                local n_bins_b = `n_unique_b'
+            }
+            else {
+                capture qui xtile `zbin_b' = `z', nq(`nbins')
+                if _rc != 0 {
+                    drop _all
+                    continue
+                }
+                local n_bins_b = `nbins'
+            }
+
+            qui gen double `cens_exp_b' = .
+            qui gen byte `dropmask_b' = 0
+
+            capture {
+                if "`method'" == "uniform" {
+                    qui _brunching_cens_uniform `X' `zbin_b' `cens_ind_b' `cens_exp_b' `dropmask_b'
+                }
+                else if "`method'" == "tobit" {
+                    qui _brunching_cens_tobit_pooled `X' `zbin_b' `cens_ind_b' `cens_exp_b' `dropmask_b'
+                }
+                else if "`method'" == "het_tobit" {
+                    qui _brunching_cens_het_tobit `X' `zbin_b' `cens_ind_b' `cens_exp_b' `dropmask_b'
+                }
+                else if "`method'" == "symmetric" {
+                    qui _brunching_cens_symmetric `X' `zbin_b' `cens_ind_b' `cens_exp_b' `dropmask_b' `swap'
+                }
+            }
+            if _rc != 0 {
+                drop _all
+                continue
+            }
+
+            qui drop if `dropmask_b' == 1 | missing(`cens_exp_b')
+            qui count
+            if r(N) < 3 {
+                drop _all
+                continue
+            }
+
+            qui gen double `reg_term_b' = `cens_exp_b' * `cens_ind_b' + `X'
+
+            capture {
+                if `n_bins_b' > 1 {
+                    qui reg `Y' `X' i.`zbin_b' `controls' `reg_term_b'
+                }
+                else {
+                    qui reg `Y' `X' `controls' `reg_term_b'
+                }
+            }
+            if _rc != 0 {
+                drop _all
+                continue
+            }
+
+            // Harvest beta and delta if both are estimable.
+            local bx = .
+            local dt = .
+            capture local bx = _b[`X']
+            local rc1 = _rc
+            capture local dt = _b[`reg_term_b']
+            local rc2 = _rc
+            if `rc1' != 0 | `rc2' != 0 {
+                drop _all
+                continue
+            }
+            // missing() works on numerics; locals are strings, so coerce.
+            if missing(real("`bx'")) | missing(real("`dt'")) {
+                drop _all
+                continue
+            }
+
+            mata: `B_beta'[`bi']  = `bx'
+            mata: `B_delta'[`bi'] = `dt'
+            local B_ok = `B_ok' + 1
+
+            drop _all
+        }
+
+        // Compute SE / CI in Mata.
+        mata: _brunching_ccn_boot_summary(`B_beta',  "`boot_se_b'", "`boot_ci_b'")
+        mata: _brunching_ccn_boot_summary(`B_delta', "`boot_se_d'", "`boot_ci_d'")
+    }
+
     _brunching_post_result, b(`b') v(`V') n(`N')                           ///
         method(`method') estimand(beta_global)                             ///
         n_cens(`n_cens_used') n_bins(`n_bins_used')                        ///
@@ -159,7 +296,65 @@ program define _brunching_ccn, eclass
         cens_exp_mean(`cens_exp_mean')                                     ///
         delta(`delta') delta_se(`delta_se')
 
+    if `boot' > 0 {
+        ereturn scalar boot_B  = `B_ok'
+        ereturn scalar boot_B_req = `boot'
+        ereturn scalar boot_se_beta  = `boot_se_b'[1, 1]
+        ereturn scalar boot_ci_beta_lo = `boot_ci_b'[1, 1]
+        ereturn scalar boot_ci_beta_hi = `boot_ci_b'[1, 2]
+        ereturn scalar boot_se_delta = `boot_se_d'[1, 1]
+        ereturn scalar boot_ci_delta_lo = `boot_ci_d'[1, 1]
+        ereturn scalar boot_ci_delta_hi = `boot_ci_d'[1, 2]
+        // Free Mata containers
+        capture mata: mata drop `B_beta' `B_delta'
+    }
+
     restore
+end
+
+
+// ---------------------------------------------------------------------------
+// Mata helper for bootstrap summaries: SE = sd, 95% CI via percentile.
+// Writes a 1x1 SE scalar matrix and a 1x2 CI matrix into Stata.
+// ---------------------------------------------------------------------------
+mata:
+mata set matastrict off
+
+void _brunching_ccn_boot_summary(real colvector b, string scalar se_name,
+                                  string scalar ci_name)
+{
+    real colvector ok, sorted
+    real scalar n, lo, hi, se_val, h_lo, h_hi, i_lo, i_hi, f_lo, f_hi
+    real rowvector ci
+
+    ok = select(b, b :!= .)
+    n  = length(ok)
+
+    if (n >= 2) se_val = sqrt(variance(ok))
+    else        se_val = .
+
+    if (n >= 10) {
+        sorted = sort(ok, 1)
+        h_lo = (n - 1) * 0.025 + 1
+        h_hi = (n - 1) * 0.975 + 1
+        i_lo = floor(h_lo); f_lo = h_lo - i_lo
+        i_hi = floor(h_hi); f_hi = h_hi - i_hi
+        if (i_lo < 1) i_lo = 1
+        if (i_lo >= n) lo = sorted[n]
+        else           lo = sorted[i_lo] + f_lo * (sorted[i_lo + 1] - sorted[i_lo])
+        if (i_hi < 1) i_hi = 1
+        if (i_hi >= n) hi = sorted[n]
+        else           hi = sorted[i_hi] + f_hi * (sorted[i_hi + 1] - sorted[i_hi])
+    }
+    else {
+        lo = .; hi = .
+    }
+
+    st_matrix(se_name, (se_val))
+    ci = (lo, hi)
+    st_matrix(ci_name, ci)
+}
+
 end
 
 

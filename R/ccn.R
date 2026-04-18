@@ -64,9 +64,14 @@
 #' @param zeta_1 Kink location of the Buchinsky-Hahn smooth weight.
 #'   Defaults to `zeta_0`. `method = "cct"`.
 #' @param boot_B Integer. Number of pairs-bootstrap replications for the
-#'   standard error. Set to `0` to skip. Default `500`. `method = "cct"`.
-#' @param seed Optional integer seed used inside the bootstrap.
-#'   `method = "cct"`.
+#'   standard error. Set to `0` to skip. Method-dependent default: `500`
+#'   for `method = "cct"` (no closed-form SE is available) and `0` for the
+#'   corrected CCN methods (`uniform`, `tobit`, `het_tobit`, `symmetric`)
+#'   so that the legacy OLS SE in `$fit` is the default; opt-in to the
+#'   pairs bootstrap by passing e.g. `boot_B = 500`. `method = "naive"`
+#'   ignores `boot_B` and reports OLS SE only.
+#' @param seed Optional integer seed used inside the bootstrap. Applies to
+#'   both `method = "cct"` and the corrected CCN methods.
 #'
 #' @return An object of class `"ccn"` containing:
 #' \describe{
@@ -158,13 +163,22 @@ ccn <- function(outcome,
                 locscale = c("auto", "on", "off"),
                 zeta_0 = NULL,
                 zeta_1 = NULL,
-                boot_B = 500L,
+                boot_B = NULL,
                 seed = NULL) {
 
   cl <- match.call()
   method   <- match.arg(method)
   swap     <- match.arg(swap)
   locscale <- match.arg(locscale)
+
+  # Default boot_B is method-dependent so we preserve back-compat:
+  #   * CCT: default 500 (the CCT estimator has no closed-form SE)
+  #   * CCN methods: default 0 (the OLS SE in $fit is the legacy default;
+  #     opt-in to bootstrap by passing boot_B = e.g. 500)
+  #   * naive: ignored entirely.
+  if (is.null(boot_B)) {
+    boot_B <- if (method == "cct") 500L else 0L
+  }
 
   # --- validate inputs ---
   stopifnot(is.data.frame(data))
@@ -308,22 +322,161 @@ ccn <- function(outcome,
     return(result)
   }
 
+  # --- corrected non-naive branch: delegate to ccn_internal_fit ---
+  het_beta_mat_full <- NULL
+  if (!is.null(het_beta)) {
+    for (v in het_beta) {
+      if (!v %in% names(data)) stop(sprintf("het_beta variable '%s' not found in data.", v))
+    }
+    # Pass the raw het-beta covariate matrix (unmultiplied by I); the
+    # internal fit recomputes the I_var interaction from it.
+    het_beta_mat_full <- as.matrix(data[, het_beta, drop = FALSE])
+    colnames(het_beta_mat_full) <- het_beta
+  }
+
+  het_delta_mat_full <- NULL
+  if (!is.null(het_delta)) {
+    for (v in het_delta) {
+      if (!v %in% names(data)) stop(sprintf("het_delta variable '%s' not found in data.", v))
+    }
+    het_delta_mat_full <- as.matrix(data[, het_delta, drop = FALSE])
+    colnames(het_delta_mat_full) <- het_delta
+  }
+
+  fit_obj <- ccn_internal_fit(
+    S             = S,
+    I             = I,
+    Z             = Z,
+    method        = method,
+    n_bins        = n_bins,
+    controls_mat  = ctrl_mat,
+    het_beta_mat  = het_beta_mat_full,
+    het_delta_mat = het_delta_mat_full,
+    cluster_delta = cluster_delta,
+    swap          = swap,
+    treatment     = treatment
+  )
+
+  if (is.null(fit_obj)) {
+    stop("ccn(): corrected fit failed (no usable observations after dropping ",
+         "failed z-cells).")
+  }
+
+  # --- bootstrap inference (optional) ---
+  boot <- NULL
+  if (!is.null(boot_B) && boot_B > 0L) {
+    boot <- ccn_bootstrap(
+      S             = S,
+      I             = I,
+      Z             = Z,
+      method        = method,
+      n_bins        = n_bins,
+      controls_mat  = ctrl_mat,
+      het_beta_mat  = het_beta_mat_full,
+      het_delta_mat = het_delta_mat_full,
+      cluster_delta = cluster_delta,
+      swap          = swap,
+      treatment     = treatment,
+      beta_names    = names(fit_obj$beta),
+      delta_names   = names(fit_obj$delta),
+      B             = as.integer(boot_B),
+      seed          = seed
+    )
+  }
+
+  result <- list(
+    fit           = fit_obj$fit,
+    beta          = fit_obj$beta,
+    delta         = fit_obj$delta,
+    method        = method,
+    estimand      = "beta_global",
+    n_obs         = fit_obj$n_obs,
+    n_censored    = fit_obj$n_censored,
+    n_bins        = n_bins,
+    n_switched    = fit_obj$n_switched,
+    cens_exp_mean = fit_obj$cens_exp_mean,
+    call          = cl,
+    data          = data,
+    outcome       = outcome,
+    treatment     = treatment,
+    instrument    = instrument,
+    swap          = swap,
+    het_beta_vars = het_beta,
+    het_delta_vars = het_delta,
+    cluster_delta = cluster_delta,
+    boot_B        = if (is.null(boot)) 0L else boot$B_ok,
+    boot_se_beta  = if (is.null(boot)) NULL else boot$se_beta,
+    boot_se_delta = if (is.null(boot)) NULL else boot$se_delta,
+    boot_ci_beta  = if (is.null(boot)) NULL else boot$ci_beta,
+    boot_ci_delta = if (is.null(boot)) NULL else boot$ci_delta,
+    boot_beta     = if (is.null(boot)) NULL else boot$beta_b,
+    boot_delta    = if (is.null(boot)) NULL else boot$delta_b
+  )
+  class(result) <- "ccn"
+  result
+}
+
+
+# ---------------------------------------------------------------------------- #
+# Internal fit for non-naive CCN methods.
+#
+# Encapsulates the full pipeline (censored expectation -> correction term ->
+# bin dummies + interactions -> corrected lm). Used both by ccn() for the
+# main fit and by ccn_bootstrap() for each resample.
+#
+# Returns NULL on degenerate input (e.g., no observations remain after
+# dropping failed z-cells, or singular design); callers handle the NULL.
+# ---------------------------------------------------------------------------- #
+#' @keywords internal
+ccn_internal_fit <- function(S, I, Z,
+                             method,
+                             n_bins,
+                             controls_mat,
+                             het_beta_mat,
+                             het_delta_mat,
+                             cluster_delta,
+                             swap,
+                             treatment) {
+
+  cens <- as.integer(I == 0)
+
+  # --- discretize instrument (re-binning per call so bootstrap resamples
+  #     use a fresh quantile cut on the resampled Z) ---
+  n_unique <- length(unique(Z))
+  nb <- if (is.null(n_bins)) min(n_unique, 50L) else n_bins
+  if (n_unique <= nb) {
+    z_bins <- as.integer(as.factor(Z))
+  } else {
+    brks <- stats::quantile(Z,
+                            probs = seq(0, 1, length.out = nb + 1L),
+                            names = FALSE)
+    # Guard against ties producing fewer than nb+1 unique breaks.
+    brks <- unique(brks)
+    if (length(brks) < 2L) {
+      z_bins <- rep(1L, length(Z))
+    } else {
+      z_bins <- as.integer(cut(Z, breaks = brks,
+                               include.lowest = TRUE, labels = FALSE))
+    }
+  }
+
   # --- compute censored expectations ---
   cens_exp <- switch(method,
     uniform   = cens_exp_uniform(I, z_bins, cens),
     tobit     = cens_exp_tobit_pooled(I, z_bins, cens),
     het_tobit = cens_exp_tobit(I, z_bins, cens),
-    symmetric = cens_exp_symmetric(I, z_bins, cens, swap = swap)
+    symmetric = cens_exp_symmetric(I, z_bins, cens, swap = swap),
+    stop(sprintf("ccn_internal_fit: unsupported method '%s'", method))
   )
 
-  # handle dropped observations (from tobit failures)
   dropped <- attr(cens_exp, "dropped")
   n_switched <- attr(cens_exp, "n_switched") %||% 0L
 
   keep <- !is.na(cens_exp)
-  if (!is.null(dropped) && length(dropped) > 0) {
+  if (!is.null(dropped) && length(dropped) > 0L) {
     keep[dropped] <- FALSE
   }
+  if (sum(keep) < 2L) return(NULL)
 
   S_k     <- S[keep]
   I_k     <- I[keep]
@@ -333,97 +486,87 @@ ccn <- function(outcome,
 
   # correction term: E[I*|I=0]*1(I=0) + I
   reg_term <- cens_exp_k * cens_k + I_k
-
   cens_exp_mean <- mean(cens_exp_k, na.rm = TRUE)
 
   # bin dummies (recompute for kept obs; use ALL K levels for no-constant model)
   z_f_k <- factor(z_bins_k)
-  if (nlevels(z_f_k) > 1) {
+  if (nlevels(z_f_k) > 1L) {
     bin_dummies_k <- stats::model.matrix(~ 0 + z_f_k)
     colnames(bin_dummies_k) <- paste0("bin_", seq_len(ncol(bin_dummies_k)))
   } else {
-    # single bin: one column of 1s acts as intercept in no-constant model
-    bin_dummies_k <- matrix(1, nrow = length(z_bins_k), ncol = 1)
+    bin_dummies_k <- matrix(1, nrow = length(z_bins_k), ncol = 1L)
     colnames(bin_dummies_k) <- "bin_1"
   }
 
   het_beta_mat_k <- NULL
-  if (!is.null(het_beta)) {
-    het_beta_mat_k <- as.matrix(data[keep, het_beta, drop = FALSE]) * I_k
-    colnames(het_beta_mat_k) <- paste0("I_", het_beta)
+  if (!is.null(het_beta_mat)) {
+    het_beta_mat_k <- het_beta_mat[keep, , drop = FALSE] * I_k
+    colnames(het_beta_mat_k) <- paste0("I_", colnames(het_beta_mat))
   }
 
   ctrl_mat_k <- NULL
-  if (!is.null(controls)) {
-    ctrl_mat_k <- as.matrix(data[keep, controls, drop = FALSE])
+  if (!is.null(controls_mat)) {
+    ctrl_mat_k <- controls_mat[keep, , drop = FALSE]
   }
 
   # --- build correction term interactions ---
-  delta_mat <- NULL
   if (!is.null(cluster_delta)) {
-    # interact reg_term with instrument bin dummies for separate delta per bin
     Z_k <- Z[keep]
     n_delta_bins <- cluster_delta
     if (length(unique(Z_k)) <= n_delta_bins) {
       z_delta <- as.integer(as.factor(Z_k))
     } else {
-      z_delta <- as.integer(cut(Z_k, breaks = stats::quantile(Z_k, probs = seq(0, 1, length.out = n_delta_bins + 1L)),
-                                include.lowest = TRUE, labels = FALSE))
+      brks_d <- stats::quantile(Z_k,
+                                probs = seq(0, 1, length.out = n_delta_bins + 1L),
+                                names = FALSE)
+      brks_d <- unique(brks_d)
+      if (length(brks_d) < 2L) {
+        z_delta <- rep(1L, length(Z_k))
+      } else {
+        z_delta <- as.integer(cut(Z_k, breaks = brks_d,
+                                  include.lowest = TRUE, labels = FALSE))
+      }
     }
-    delta_dummies <- stats::model.matrix(~ factor(z_delta))[, , drop = FALSE]  # keep all levels
+    delta_dummies <- stats::model.matrix(~ factor(z_delta))[, , drop = FALSE]
     delta_mat <- delta_dummies * reg_term
     colnames(delta_mat) <- paste0("delta_bin_", seq_len(ncol(delta_mat)))
-  } else if (!is.null(het_delta)) {
-    for (v in het_delta) {
-      if (!v %in% names(data)) stop(sprintf("het_delta variable '%s' not found in data.", v))
-    }
+  } else if (!is.null(het_delta_mat)) {
     delta_base <- cbind(reg_term = reg_term)
-    delta_inter <- as.matrix(data[keep, het_delta, drop = FALSE]) * reg_term
-    colnames(delta_inter) <- paste0("reg_term_", het_delta)
+    delta_inter <- het_delta_mat[keep, , drop = FALSE] * reg_term
+    colnames(delta_inter) <- paste0("reg_term_", colnames(het_delta_mat))
     delta_mat <- cbind(delta_base, delta_inter)
   } else {
     delta_mat <- cbind(reg_term = reg_term)
   }
 
-  # --- run corrected regression (no constant, as in Stata) ---
+  # --- run corrected regression (no constant) ---
   X <- cbind(I = I_k, het_beta_mat_k, bin_dummies_k, ctrl_mat_k, delta_mat)
   df_reg <- data.frame(S = S_k, X, check.names = FALSE)
-  fit <- stats::lm(S ~ 0 + ., data = df_reg)
+  fit <- tryCatch(stats::lm(S ~ 0 + ., data = df_reg),
+                  error = function(e) NULL)
+  if (is.null(fit)) return(NULL)
 
-  # --- extract coefficients ---
-  beta <- coef(fit)["I"]
+  co <- stats::coef(fit)
+  beta <- co["I"]
+  if (is.na(beta)) return(NULL)
   names(beta) <- treatment
-  if (!is.null(het_beta)) {
-    het_coefs <- coef(fit)[paste0("I_", het_beta)]
+  if (!is.null(het_beta_mat)) {
+    het_coefs <- co[paste0("I_", colnames(het_beta_mat))]
     beta <- c(beta, het_coefs)
   }
 
   delta_names <- colnames(delta_mat)
-  delta <- coef(fit)[delta_names]
+  delta <- co[delta_names]
 
-  result <- list(
+  list(
     fit           = fit,
     beta          = beta,
     delta         = delta,
-    method        = method,
-    estimand      = "beta_global",
     n_obs         = sum(keep),
     n_censored    = sum(cens_k),
-    n_bins        = n_bins,
     n_switched    = n_switched,
-    cens_exp_mean = cens_exp_mean,
-    call          = cl,
-    data          = data,
-    outcome       = outcome,
-    treatment     = treatment,
-    instrument    = instrument,
-    swap          = swap,
-    het_beta_vars = het_beta,
-    het_delta_vars = het_delta,
-    cluster_delta = cluster_delta
+    cens_exp_mean = cens_exp_mean
   )
-  class(result) <- "ccn"
-  result
 }
 
 # base R does not have %||% before 4.4
