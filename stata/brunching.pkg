@@ -1,0 +1,24 @@
+v 3
+d 'brunching': Bunching-as-censoring estimator (CCN 2024 and CCT 2025)
+d
+d {bf:brunching} implements the Caetano-Caetano-Nielsen (2024, JBES)
+d censored-expectation estimators and the Caetano-Caetano-Tecchio (2025)
+d local boundary-slope estimator for treatment variables censored at zero.
+d
+d Supports six methods:
+d
+d   naive      - uncorrected OLS with bin fixed effects
+d   uniform    - uniform tail-symmetry correction
+d   tobit      - pooled Tobit with bin dummies
+d   het_tobit  - per-bin Tobit
+d   symmetric  - tail-symmetry with Tobit fallback (CCN 2024 headline)
+d   cct        - Caetano-Caetano-Tecchio (2025) local boundary slope
+d
+d Authors: Hugo Sant'Anna, Debora Mazetto
+d Distribution-Date: 20260417
+d Version: 0.1.0
+d
+f brunching.ado
+f brunching.sthlp
+f _brunching_ccn.ado
+f _brunching_cct.ado
